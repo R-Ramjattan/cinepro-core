@@ -1,6 +1,7 @@
 import { OMSSServer } from '@omss/framework';
 import 'dotenv/config';
 import { fileURLToPath } from 'node:url';
+import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { knownThirdPartyProxies } from './thirdPartyProxies.js';
 import { streamPatterns } from './streamPatterns.js';
@@ -9,6 +10,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function main() {
+    const host = process.env.HOST ?? 'localhost';
+    const apiKey = process.env.CINEPRO_API_KEY?.trim();
+    if ((host === '0.0.0.0' || host === '::') && !apiKey) {
+        throw new Error('CINEPRO_API_KEY is required when CinePro listens on a public interface');
+    }
     // TMDB's read-access token is an alternative to its v3 API key.
     // OMSS builds v3 URLs with api_key, so translate only TMDB requests to bearer auth.
     const tmdbReadToken = process.env.TMDB_READ_ACCESS_TOKEN;
@@ -29,7 +35,7 @@ async function main() {
         version: '1.0.0',
 
         // Network
-        host: process.env.HOST ?? 'localhost',
+        host,
         port: Number(process.env.PORT ?? 3000),
         publicUrl: process.env.PUBLIC_URL,
 
@@ -91,6 +97,22 @@ async function main() {
         }
     });
 
+    // Health checks remain public; every other Core endpoint requires a server-side key.
+    server.getInstance().addHook('onRequest', (request, reply, done) => {
+        if (!apiKey || request.method === 'OPTIONS' ||
+            (request.method === 'GET' && ['/', '/v1', '/v1/', '/v1/health'].includes(request.url.split('?')[0]))) {
+            done();
+            return;
+        }
+        const supplied = Buffer.from(request.headers.authorization ?? '');
+        const expected = Buffer.from(`Bearer ${apiKey}`);
+        if (supplied.length === expected.length && timingSafeEqual(supplied, expected)) {
+            done();
+            return;
+        }
+        reply.code(401).header('WWW-Authenticate', 'Bearer').send({ error: 'Unauthorized' });
+    });
+
     // Register providers
     const registry = server.getRegistry();
     await registry.discoverProviders(path.join(__dirname, './providers/'));
@@ -146,6 +168,7 @@ ${borderBottom}
 `);
 }
 
-main().catch(() => {
+main().catch(error => {
+    console.error('[CinePro] Startup failed:', error instanceof Error ? error.message : 'Unknown error');
     process.exit(1);
 });
