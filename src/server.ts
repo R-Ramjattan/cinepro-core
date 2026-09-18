@@ -9,6 +9,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function main() {
+    // TMDB's read-access token is an alternative to its v3 API key.
+    // OMSS builds v3 URLs with api_key, so translate only TMDB requests to bearer auth.
+    const tmdbReadToken = process.env.TMDB_READ_ACCESS_TOKEN;
+    if (!process.env.TMDB_API_KEY && tmdbReadToken) {
+        const upstreamFetch = globalThis.fetch;
+        globalThis.fetch = (input, init) => {
+            const url = new URL(input instanceof Request ? input.url : input);
+            if (url.origin !== 'https://api.themoviedb.org') return upstreamFetch(input, init);
+            url.searchParams.delete('api_key');
+            const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+            headers.set('Authorization', `Bearer ${tmdbReadToken}`);
+            return upstreamFetch(url, { ...init, headers, redirect: 'error' });
+        };
+    }
+
     const server = new OMSSServer({
         name: 'CinePro',
         version: '1.0.0',
@@ -34,7 +49,7 @@ async function main() {
 
         // TMDB
         tmdb: {
-            apiKey: process.env.TMDB_API_KEY!,
+            apiKey: process.env.TMDB_API_KEY ?? (tmdbReadToken ? 'tmdb-bearer-adapter' : ''),
             cacheTTL: 24 * 60 * 60 // 24h
         },
 
