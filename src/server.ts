@@ -45,9 +45,10 @@ async function main() {
         },
 
         cors: {
-            origin: process.env.CORS_ORIGIN ?? '*',
-            methods: ['GET', 'OPTIONS'],
-            allowedHeaders: ['Content-Type', 'Authorization'],
+            origin: process.env.CORS_ORIGIN?.split(',').map(origin => origin.trim()).filter(Boolean)
+                ?? ['http://127.0.0.1:5173', 'http://localhost:5173'],
+            methods: ['GET', 'HEAD', 'OPTIONS'],
+            allowedHeaders: ['Content-Type', 'Authorization', 'Range', 'Accept'],
             exposedHeaders: ['Content-Range', 'Accept-Ranges', 'ETag'],
             preflightContinue: false,
             optionsSuccessStatus: 204
@@ -78,6 +79,22 @@ async function main() {
     // Register providers
     const registry = server.getRegistry();
     await registry.discoverProviders(path.join(__dirname, './providers/'));
+
+    // Local trial: one unresponsive provider must not hold up every usable source.
+    for (const provider of registry.getProviders()) {
+        for (const method of ['getMovieSources', 'getTVSources'] as const) {
+            const original = provider[method].bind(provider);
+            provider[method] = (media) => new Promise((resolve, reject) => {
+                const timer = setTimeout(() => resolve({
+                    sources: [], subtitles: [], diagnostics: [{
+                        code: 'PROVIDER_ERROR', severity: 'warning', field: '',
+                        message: `${provider.name}: exceeded the local 30 second limit`
+                    }]
+                }), 30000);
+                original(media).then(result => { clearTimeout(timer); resolve(result); }, error => { clearTimeout(timer); reject(error); });
+            });
+        }
+    }
 
     await server.start();
 
